@@ -1,0 +1,80 @@
+{
+  "msg_type": "Pedestrian",
+  "header": {
+    "timestamp": 639080700001348233,
+    "frameId": 0,
+    "mapName": "SuperMarket",
+    "status": "success"
+  },
+  "map": null,
+  "agents": [
+    {
+      "id": "people1",
+      "pos": {
+        "x": -15.0,
+        "y": 0.0,
+        "z": 0.15
+      },
+      "velocity": {
+        "x": 0.0,
+        "y": 0.0,
+        "z": 0.0
+      },
+      "target": {
+        "x": 0.0,
+        "y": 0.0,
+        "z": 0.0
+      },
+      "radius": 0.5
+    },
+    {
+      "id": "people2",
+      "pos": {
+        "x": -15.0,
+        "y": 0.0,
+        "z": 0.15
+      },
+      "velocity": {
+        "x": 1.0,
+        "y": 1.0,
+        "z": 1.0
+      },
+      "target": {
+        "x": 1.0,
+        "y": 1.0,
+        "z": 1.0
+      },
+      "radius": 0.45
+    }
+  ],
+  "obstacles": [
+    {
+      "id": "robot1",
+      "pos": {
+        "x": -15.0,
+        "y": 0.0,
+        "z": 0.15
+      },
+      "velocity": {
+        "x": 0.0,
+        "y": 0.0,
+        "z": 0.0
+      },
+      "radius": 0.5
+    },
+    {
+      "id": "robot2",
+      "pos": {
+        "x": -15.0,
+        "y": 0.0,
+        "z": 0.15
+      },
+      "velocity": {
+        "x": 0.0,
+        "y": 0.0,
+        "z": 0.0
+      },
+      "radius": 0.35
+    }
+  ]
+}

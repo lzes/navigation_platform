@@ -1,0 +1,10 @@
+{
+  "msg_type": "Init_Map",
+  "header": {
+    "timestamp": 639080705049988976,
+    "frameId": 0,
+    "mapName": "SuperMarket",
+    "status": "success"
+  },
+  "commands": null
+}

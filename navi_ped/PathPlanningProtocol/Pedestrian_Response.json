@@ -1,0 +1,29 @@
+{
+  "msg_type": "Pedestrian",
+  "header": {
+    "timestamp": 639080705429653129,
+    "frameId": 0,
+    "mapName": "SuperMarket",
+    "status": "success"
+  },
+  "commands": [
+    {
+      "id": "people1",
+      "action": "move",
+      "desiredVelocity": {
+        "x": 1.0,
+        "y": 1.0,
+        "z": 1.0
+      }
+    },
+    {
+      "id": "people2",
+      "action": "move",
+      "desiredVelocity": {
+        "x": 1.0,
+        "y": 1.0,
+        "z": 1.0
+      }
+    }
+  ]
+}
