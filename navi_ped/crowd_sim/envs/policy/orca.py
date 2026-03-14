@@ -62,7 +62,7 @@ class ORCA(Policy):
         self.neighbor_dist = 3
         self.max_neighbors = 5
         self.time_horizon = 5
-        self.time_horizon_obst = 1.5
+        self.time_horizon_obst = 2
         self.radius = 0.3
         self.max_speed = 1.5
         self.sim = None
@@ -140,9 +140,45 @@ class ORCA(Policy):
         return action
 
 
+def _point_to_segment_dist(p, a, b):
+    """计算点 p 到线段 ab 的最短距离"""
+    ab = b - a
+    ap = p - a
+    t = np.dot(ap, ab) / (np.dot(ab, ab) + 1e-12)
+    t = max(0.0, min(1.0, t))
+    closest = a + t * ab
+    return float(np.linalg.norm(p - closest))
+
+
+def _point_to_polygon_dist(p, vertices):
+    """计算点 p 到多边形边界的最短距离"""
+    min_dist = float('inf')
+    n = len(vertices)
+    for i in range(n):
+        a = np.array(vertices[i], dtype=float)
+        b = np.array(vertices[(i + 1) % n], dtype=float)
+        d = _point_to_segment_dist(p, a, b)
+        min_dist = min(min_dist, d)
+    return min_dist
+
+
 class CentralizedORCA(ORCA):
     def __init__(self):
         super().__init__()
+        self.static_obstacle_safe_dist = 1.5  # 距离静态障碍物小于此值时，禁用提速逻辑
+
+    def _nearest_static_obstacle_dist(self, pos):
+        """计算位置 pos 到最近静态障碍物的距离"""
+        obstacles = getattr(self, 'static_obstacles', []) or []
+        if not obstacles:
+            return float('inf')
+        p = np.array(pos, dtype=float)
+        min_dist = float('inf')
+        for vertices in obstacles:
+            if len(vertices) >= 2:
+                d = _point_to_polygon_dist(p, vertices)
+                min_dist = min(min_dist, d)
+        return min_dist
 
     def predict(self, state):
         """ Centralized planning for all agents """
@@ -214,7 +250,8 @@ class CentralizedORCA(ORCA):
                      for agent_state in state]
         far_thresh = getattr(self, 'far_from_human_threshold', 3.0)
         min_far = getattr(self, 'min_speed_when_far_from_humans', 0.6)
-        deadlock_creep = getattr(self, 'min_creep_speed', 0.15)  # 打破对称死锁时的最小速度
+        deadlock_creep = getattr(self, 'min_creep_speed', 0.15)
+        static_safe_dist = getattr(self, 'static_obstacle_safe_dist', 1.5)
 
         for i, agent_state in enumerate(state):
             vx, vy = self.sim.getAgentVelocity(i)
@@ -225,11 +262,23 @@ class CentralizedORCA(ORCA):
             )
             dist = float(np.linalg.norm(to_goal))
             my_pos = positions[i]
-            nearest_dist = float('inf')
+
+            # 计算到最近其他行人的距离
+            nearest_human_dist = float('inf')
             for j, pos in enumerate(positions):
                 if j != i:
                     d = float(np.linalg.norm(pos - my_pos))
-                    nearest_dist = min(nearest_dist, d)
+                    nearest_human_dist = min(nearest_human_dist, d)
+
+            # 计算到最近静态障碍物的距离
+            nearest_static_dist = self._nearest_static_obstacle_dist(
+                agent_state.position)
+
+            # 综合考虑：取行人和静态障碍物的最近距离
+            nearest_any_dist = min(nearest_human_dist, nearest_static_dist)
+
+            # 是否靠近静态障碍物（靠近时禁用提速逻辑，完全信任 RVO2）
+            near_static_obstacle = nearest_static_dist < static_safe_dist
 
             min_creep = getattr(self, 'min_creep_speed', 0.15)
             if dist > 1e-6:
@@ -241,19 +290,21 @@ class CentralizedORCA(ORCA):
                         v_new = v - backward * goal_dir
                         action = ActionXY(float(v_new[0]), float(v_new[1]))
                         v = np.array([action.vx, action.vy], dtype=float)
-            # 最小爬行速度：仅当 RVO2 输出已大致朝向目标时才施加，避免覆盖避障（如遇静态障碍物时 RVO2 会给出小/零速度）
+
+            # 最小爬行速度：仅当远离静态障碍物时才施加
             v = np.array([action.vx, action.vy], dtype=float)
             speed = float(np.linalg.norm(v))
-            if dist > self.goal_radius:
+            if dist > self.goal_radius and not near_static_obstacle:
                 if speed < min_creep:
                     u = to_goal / dist
                     toward = float(np.dot(v, u)) if speed > 1e-6 else 0.0
-                    if toward > 0.1:  # 只在明确朝目标走时提速（0.1 m/s），避免覆盖避障
+                    # 提高阈值到 0.5，确保只有明确朝目标移动时才提速
+                    if toward > 0.5:
                         action = ActionXY(
                             float(u[0] * min_creep), float(u[1] * min_creep)
                         )
-                    # 对称死锁：速度近似为 0 且附近有其他人（非独自被障碍物挡住）时，给带横向分量的速度打破僵局（按索引左右错开，避免两人同时前冲）
-                    elif speed < 0.02 and nearest_dist < far_thresh and nearest_dist > 0.5:
+                    # 对称死锁：速度近似为 0 且附近有其他人时，给带横向分量的速度打破僵局
+                    elif speed < 0.02 and nearest_human_dist < far_thresh and nearest_human_dist > 0.5:
                         u = to_goal / dist
                         tangent = np.array([-u[1], u[0]])
                         side = 1 if (i % 2) == 0 else -1
@@ -263,15 +314,17 @@ class CentralizedORCA(ORCA):
                         if nnorm > 1e-6:
                             nudge = nudge / nnorm * deadlock_creep
                         action = ActionXY(float(nudge[0]), float(nudge[1]))
-            # 与最近其他行人距离 > 阈值时，保证朝向目标速度不低于 min_far；同样不覆盖避障
-            if dist > self.goal_radius and dist > 1e-6:
-                if nearest_dist > far_thresh:
+
+            # 远离所有障碍时提速：必须同时远离行人和静态障碍物
+            if dist > self.goal_radius and dist > 1e-6 and not near_static_obstacle:
+                if nearest_any_dist > far_thresh:
                     v = np.array([action.vx, action.vy], dtype=float)
                     speed = float(np.linalg.norm(v))
                     if speed < min_far:
                         u = to_goal / dist
                         toward = float(np.dot(v, u)) if speed > 1e-6 else 0.0
-                        if toward > 0.1:  # 仅当已在朝目标移动时提速，避免撞向静态障碍物
+                        # 提高阈值到 0.5，更严格地判断是否朝目标移动
+                        if toward > 0.5:
                             action = ActionXY(
                                 float(u[0] * min_far), float(u[1] * min_far)
                             )

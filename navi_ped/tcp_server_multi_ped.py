@@ -1,4 +1,3 @@
-from map_trans import convert_from_dict  # type: ignore[import-untyped]
 from crowd_sim.envs.utils.state import FullState, ObservableState, JointState
 from crowd_sim.envs.policy.policy_factory import policy_factory
 import socket
@@ -9,6 +8,7 @@ import time
 import threading
 import os
 import sys
+from datetime import datetime
 
 # 将项目根目录加入路径，以便导入 crowd_sim / crowd_nav
 root_dir = os.path.dirname(os.path.abspath(__file__))
@@ -20,10 +20,100 @@ scripts_dir = os.path.join(root_dir, "scripts")
 if scripts_dir not in sys.path:
     sys.path.insert(0, scripts_dir)
 
+from map_trans import convert_from_dict  # type: ignore[import-untyped]
+
+# ---------- 日志配置 ----------
+LOG_DIR = os.path.join(root_dir, "unity_logs")
+LOG_UNITY_DATA = True  # 是否保存Unity发来的数据
+LOG_RESPONSE_DATA = True  # 是否保存发送给Unity的响应数据
+LOG_MERGE_FREQUENT = True  # 高频消息（如Pedestrian_Update）是否合并到同一文件
+LOG_FREQUENT_TYPES = {"Pedestrian_Update"}  # 需要合并的高频消息类型
+
+
+def ensure_log_dir():
+    """确保日志目录存在"""
+    if not os.path.exists(LOG_DIR):
+        os.makedirs(LOG_DIR)
+        print(f"[日志] 创建日志目录: {LOG_DIR}")
+
+
+def _get_date_dir():
+    """获取按日期创建的子目录"""
+    ensure_log_dir()
+    date_str = datetime.now().strftime("%Y-%m-%d")
+    date_dir = os.path.join(LOG_DIR, date_str)
+    if not os.path.exists(date_dir):
+        os.makedirs(date_dir)
+    return date_dir
+
+
+def save_unity_message(msg, addr):
+    """将Unity发来的消息保存到本地文件
+
+    - Init_Map 等低频消息：每条单独保存为一个文件
+    - Pedestrian_Update 等高频消息：追加到同一个 JSONL 文件中
+    """
+    if not LOG_UNITY_DATA:
+        return
+
+    date_dir = _get_date_dir()
+    msg_type = msg.get("msg_type", "unknown")
+    timestamp = datetime.now().strftime("%H-%M-%S-%f")
+
+    log_entry = {
+        "direction": "recv",
+        "timestamp": datetime.now().isoformat(),
+        "client_addr": str(addr),
+        "message": msg
+    }
+
+    try:
+        if LOG_MERGE_FREQUENT and msg_type in LOG_FREQUENT_TYPES:
+            filename = f"recv_{msg_type}.jsonl"
+            filepath = os.path.join(date_dir, filename)
+            with open(filepath, 'a', encoding='utf-8') as f:
+                f.write(json.dumps(log_entry, ensure_ascii=False) + '\n')
+        else:
+            filename = f"recv_{msg_type}_{timestamp}.json"
+            filepath = os.path.join(date_dir, filename)
+            with open(filepath, 'w', encoding='utf-8') as f:
+                json.dump(log_entry, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"[日志] 保存接收消息失败: {e}")
+
+
+def save_response_message(msg, addr):
+    """将发送给Unity的响应消息保存到本地文件"""
+    if not LOG_RESPONSE_DATA:
+        return
+
+    date_dir = _get_date_dir()
+    msg_type = msg.get("msg_type", "unknown")
+    timestamp = datetime.now().strftime("%H-%M-%S-%f")
+
+    log_entry = {
+        "direction": "send",
+        "timestamp": datetime.now().isoformat(),
+        "client_addr": str(addr),
+        "message": msg
+    }
+
+    try:
+        if LOG_MERGE_FREQUENT and msg_type in LOG_FREQUENT_TYPES:
+            filename = f"send_{msg_type}.jsonl"
+            filepath = os.path.join(date_dir, filename)
+            with open(filepath, 'a', encoding='utf-8') as f:
+                f.write(json.dumps(log_entry, ensure_ascii=False) + '\n')
+        else:
+            filename = f"send_{msg_type}_{timestamp}.json"
+            filepath = os.path.join(date_dir, filename)
+            with open(filepath, 'w', encoding='utf-8') as f:
+                json.dump(log_entry, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"[日志] 保存发送消息失败: {e}")
+
 
 # 服务端状态管理
-
-
 class ServerState:
     def __init__(self):
         self.map_data = None  # 存储地图数据
@@ -98,18 +188,21 @@ def parse_server_message(sock):
     # 2. 读取 JSON 数据
     json_bytes = recv_all(sock, json_len)
     msg_dict = json.loads(json_bytes.decode('utf-8'))
-    print("🔵 收到消息:", msg_dict)
+    # print("🔵 收到消息:", msg_dict)
     return msg_dict
 
 
-def send_client_msg(sock, client_msg):
+def send_client_msg(sock, client_msg, addr=None):
     """将 ClientMsg 结构回发给 Unity"""
     msg_json = json.dumps(client_msg)
     msg_bytes = msg_json.encode('utf-8')
 
     length = len(msg_bytes)
-    print(f"🔴 回传消息: {msg_json[:100]}... (长度: {length})")
+    # print(f"🔴 回传消息: {msg_json[:100]}... (长度: {length})")
     sock.sendall(struct.pack('<I', len(msg_bytes)) + msg_bytes)
+
+    # 保存发送的消息到日志
+    save_response_message(client_msg, addr)
 
 
 def _vec2(obj, x_key="x", z_key="z"):
@@ -267,24 +360,63 @@ def handle_client(conn, addr):
         while True:
             msg = parse_server_message(conn)
 
+            # 保存Unity发来的数据到本地文件
+            save_unity_message(msg, addr)
+
             if msg["msg_type"] == "Init_Map":
                 # 从 TCP 传来的地图信息经 map_trans 转为 boxes_2d 格式，再转为静态障碍物（不读文件）
                 server_state.map_data = msg["map"]
+                map_data = msg["map"]
+
+                # ---------- 调试：打印地图关键信息 ----------
+                print("\n" + "=" * 60)
+                print("[地图调试] 收到 Init_Map 消息")
+                print(f"  地图名称: {map_data.get('mapName', 'N/A')}")
+
+                # 检查 boxes 数据
+                boxes_key = "boxes" if "boxes" in map_data else "Boxs"
+                boxes_list = map_data.get(boxes_key, [])
+                print(f"  障碍物字段: '{boxes_key}', 数量: {len(boxes_list)}")
+
+                if boxes_list:
+                    print(f"  前3个障碍物示例:")
+                    for i, box in enumerate(boxes_list[:3]):
+                        pos = box.get("position", {})
+                        scale = box.get("scale", {})
+                        print(f"    [{i}] pos=({pos.get('x', 0):.2f}, {pos.get('z', 0):.2f}), "
+                              f"scale=({scale.get('x', 0):.2f}, {scale.get('z', 0):.2f})")
+                # ---------- 调试结束 ----------
+
                 if USE_STATIC_OBSTACLES:
                     boxes_2d = convert_from_dict(msg["map"])
                     server_state.static_obstacles = static_obstacles_from_boxes_2d(
                         boxes_2d)
+
+                    # ---------- 调试：打印转换后的静态障碍物 ----------
+                    print(
+                        f"\n[地图调试] 转换后静态障碍物: {len(server_state.static_obstacles)} 个")
+                    if server_state.static_obstacles:
+                        print(f"  前3个障碍物顶点:")
+                        for i, obs in enumerate(server_state.static_obstacles[:3]):
+                            print(
+                                f"    [{i}] {len(obs)}个顶点: {obs[0] if obs else 'N/A'} ...")
+                    # ---------- 调试结束 ----------
                 else:
                     server_state.static_obstacles = []
+
                 policy = get_centralized_orca_policy()
                 policy.static_obstacles = server_state.static_obstacles
                 if USE_STATIC_OBSTACLES and policy.safety_space > 0.1:
                     policy.safety_space = 0.1
                 server_state.is_initialized = True
+
+                # ---------- 调试：确认 policy 设置 ----------
+                print(f"\n[地图调试] ORCA策略配置:")
                 print(
-                    f"地图数据接收成功: {msg['map']['mapName']}, "
-                    f"静态障碍物: {'启用, %d 个' % len(server_state.static_obstacles) if USE_STATIC_OBSTACLES else '未启用'}"
-                )
+                    f"  static_obstacles 已设置: {len(policy.static_obstacles)} 个")
+                print(f"  safety_space: {policy.safety_space}")
+                print(f"  USE_STATIC_OBSTACLES: {USE_STATIC_OBSTACLES}")
+                print("=" * 60 + "\n")
                 # 返回Init_Map确认
                 response = {
                     "msg_type": "Init_Map",
@@ -296,7 +428,7 @@ def handle_client(conn, addr):
                     },
                     "commands": []  # 添加空的commands数组，确保JSON结构完整
                 }
-                send_client_msg(conn, response)
+                send_client_msg(conn, response, addr)
                 print(f"发送Init_Map确认给 {addr}")
             elif msg["msg_type"] == "Pedestrian_Update":
                 if "agents" not in msg:
@@ -306,6 +438,16 @@ def handle_client(conn, addr):
                 policy = get_centralized_orca_policy()
                 policy.static_obstacles = getattr(
                     server_state, "static_obstacles", [])
+
+                # ---------- 调试：每100帧打印一次状态 ----------
+                frame_id = msg.get("header", {}).get("frameId", 0)
+                if frame_id % 100 == 0:
+                    print(f"[帧{frame_id}] agents={len(msg['agents'])}, "
+                          f"obstacles={len(msg['obstacles'])}, "
+                          f"static_obs={len(policy.static_obstacles)}, "
+                          f"map_initialized={server_state.is_initialized}")
+                # ---------- 调试结束 ----------
+
                 commands = calculate_avoidance(msg["agents"], msg["obstacles"])
 
                 # 7. 构建响应
@@ -321,7 +463,7 @@ def handle_client(conn, addr):
                 }
 
                 # 发送响应
-                send_client_msg(conn, response)
+                send_client_msg(conn, response, addr)
             else:
                 print(f"错误：期望Init_Map/Pedestrian_Update，收到{msg['msg_type']}")
 
