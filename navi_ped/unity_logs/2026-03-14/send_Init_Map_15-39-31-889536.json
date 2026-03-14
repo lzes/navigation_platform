@@ -1,0 +1,15 @@
+{
+  "direction": "send",
+  "timestamp": "2026-03-14T15:39:31.889543",
+  "client_addr": "('10.1.1.198', 56940)",
+  "message": {
+    "msg_type": "Init_Map",
+    "header": {
+      "timestamp": 1773473971889,
+      "frameId": 0,
+      "mapName": "SuperMarket",
+      "status": "OK"
+    },
+    "commands": []
+  }
+}
