@@ -85,7 +85,8 @@ def compute_speed_by_pedestrian_count(robot_pos, humans, *,
 
 def load_static_obstacles_from_boxes_2d(json_path=None):
     """从 boxes_2d.json 加载静态障碍物（逆时针顶点）。
-    格式: [{"vertices": [[x,y], ...]}, ...]
+    格式: [{"vertices": [[x,y], ...], "type": "货架"}, ...]
+    type 字段用于标识障碍物名称（如货架、收银台、障碍物等），所有项都会被加载。
     返回: List[List[Tuple[float, float]]]，供 RVO2 addObstacle 使用。
     """
     if json_path is None:

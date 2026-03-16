@@ -66,7 +66,10 @@ def convert(input_path):
     output = []
     for b in boxes:
         verts = compute_vertices(b)
-        output.append({"vertices": verts})
+        item = {"vertices": verts}
+        if "type" in b:
+            item["type"] = b["type"]
+        output.append(item)
 
     return output
 
